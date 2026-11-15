@@ -4,6 +4,8 @@
 #include <cmath>
 #include <string>
 #include <unistd.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <sampling.h>
 
 #include "logging.h"
@@ -38,10 +40,29 @@ static llama_context                    * g_context;
 static common_batch                       g_batch;
 static common_chat_templates_ptr          g_chat_templates;
 static common_sampler                   * g_sampler;
+static std::string                        g_diagnostics_path;
+
+// Durable, content-free checkpoints survive fatal native crashes.
+static void write_diagnostic(const char *stage) {
+    if (g_diagnostics_path.empty()) return;
+    const int fd = open(g_diagnostics_path.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+    if (fd < 0) return;
+    const std::string line = std::string("[native] ") + stage + "\\n";
+    const char *data = line.data();
+    size_t remaining = line.size();
+    while (remaining > 0) {
+        const ssize_t written = write(fd, data, remaining);
+        if (written <= 0) break;
+        data += written;
+        remaining -= static_cast<size_t>(written);
+    }
+    fsync(fd);
+    close(fd);
+}
 
 extern "C"
 JNIEXPORT void JNICALL
-Java_com_arm_aichat_internal_InferenceEngineImpl_init(JNIEnv *env, jobject /*unused*/, jstring nativeLibDir) {
+Java_com_arm_aichat_internal_InferenceEngineImpl_init(JNIEnv *env, jobject /*unused*/, jstring nativeLibDir, jstring diagnosticsPath) {
     // Set llama log handler to Android
     llama_log_set(aichat_android_log_callback, nullptr);
 
@@ -357,25 +378,39 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_processSystemPrompt(
         jobject /*unused*/,
         jstring jsystem_prompt
 ) {
+    write_diagnostic("native.reset.enter");
+
     // Reset long-term & short-term states
+    write_diagnostic("native.reset.before_long_term_reset");
     reset_long_term_states();
+    write_diagnostic("native.reset.after_long_term_reset");
     reset_short_term_states();
+    write_diagnostic("native.reset.after_short_term_reset");
 
     // Obtain system prompt from JEnv
+    write_diagnostic("native.reset.before_get_system_prompt");
     const auto *system_prompt = env->GetStringUTFChars(jsystem_prompt, nullptr);
+    write_diagnostic("native.reset.after_get_system_prompt");
     LOGd("%s: System prompt received: \n%s", __func__, system_prompt);
     std::string formatted_system_prompt(system_prompt);
 
     // Format system prompt if applicable
+    write_diagnostic("native.reset.before_chat_template_check");
     const bool has_chat_template = common_chat_templates_was_explicit(g_chat_templates.get());
+    write_diagnostic("native.reset.after_chat_template_check");
     if (has_chat_template) {
+        write_diagnostic("native.reset.before_chat_format");
         formatted_system_prompt = chat_add_and_format(ROLE_SYSTEM, system_prompt);
+        write_diagnostic("native.reset.after_chat_format");
     }
     env->ReleaseStringUTFChars(jsystem_prompt, system_prompt);
+    write_diagnostic("native.reset.after_release_system_prompt");
 
     // Tokenize system prompt
+    write_diagnostic("native.reset.before_tokenize");
     const auto system_tokens = common_tokenize(g_context, formatted_system_prompt,
                                                has_chat_template, has_chat_template);
+    write_diagnostic(("native.reset.after_tokenize tokenCount=" + std::to_string(system_tokens.size())).c_str());
     for (auto id: system_tokens) {
         LOGv("token: `%s`\t -> `%d`", common_token_to_piece(g_context, id).c_str(), id);
     }
@@ -383,19 +418,24 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_processSystemPrompt(
     // Handle context overflow
     const int max_batch_size = DEFAULT_CONTEXT_SIZE - OVERFLOW_HEADROOM;
     if ((int) system_tokens.size() > max_batch_size) {
+        write_diagnostic("native.reset.prompt_too_long");
         LOGe("%s: System prompt too long for context! %d tokens, max: %d",
              __func__, (int) system_tokens.size(), max_batch_size);
         return 1;
     }
 
     // Decode system tokens in batches
-    if (decode_tokens_in_batches(g_context, g_batch, system_tokens, current_position)) {
+    write_diagnostic("native.reset.before_decode_tokens");
+    const int decode_result = decode_tokens_in_batches(g_context, g_batch, system_tokens, current_position);
+    write_diagnostic(("native.reset.after_decode_tokens result=" + std::to_string(decode_result)).c_str());
+    if (decode_result) {
         LOGe("%s: llama_decode() failed!", __func__);
         return 2;
     }
 
     // Update position
     system_prompt_position = current_position = (int) system_tokens.size();
+    write_diagnostic("native.reset.complete");
     return 0;
 }
 
