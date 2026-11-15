@@ -290,12 +290,19 @@ static llama_pos system_prompt_position;
 static llama_pos current_position;
 
 static void reset_long_term_states(const bool clear_kv_cache = true) {
+    write_diagnostic("native.reset.long_term.enter");
     chat_msgs.clear();
+    write_diagnostic("native.reset.after_chat_history_clear");
     system_prompt_position = 0;
     current_position = 0;
+    write_diagnostic("native.reset.after_position_reset");
 
-    if (clear_kv_cache)
+    if (clear_kv_cache) {
+        write_diagnostic("native.reset.before_kv_cache_clear");
         llama_memory_clear(llama_get_memory(g_context), false);
+        write_diagnostic("native.reset.after_kv_cache_clear");
+    }
+    write_diagnostic("native.reset.long_term.complete");
 }
 
 /**
