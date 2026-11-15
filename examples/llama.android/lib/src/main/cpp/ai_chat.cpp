@@ -47,7 +47,7 @@ static void write_diagnostic(const char *stage) {
     if (g_diagnostics_path.empty()) return;
     const int fd = open(g_diagnostics_path.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
     if (fd < 0) return;
-    const std::string line = std::string("[native] ") + stage + "\\n";
+    const std::string line = std::string("[native] ") + stage + "\n";
     const char *data = line.data();
     size_t remaining = line.size();
     while (remaining > 0) {
@@ -63,6 +63,12 @@ static void write_diagnostic(const char *stage) {
 extern "C"
 JNIEXPORT void JNICALL
 Java_com_arm_aichat_internal_InferenceEngineImpl_init(JNIEnv *env, jobject /*unused*/, jstring nativeLibDir, jstring diagnosticsPath) {
+    // Set up the private diagnostics file before any model operation.
+    const auto *path_to_diagnostics = env->GetStringUTFChars(diagnosticsPath, nullptr);
+    g_diagnostics_path = path_to_diagnostics;
+    env->ReleaseStringUTFChars(diagnosticsPath, path_to_diagnostics);
+    write_diagnostic("native.init.enter");
+
     // Set llama log handler to Android
     llama_log_set(aichat_android_log_callback, nullptr);
 
@@ -71,9 +77,11 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_init(JNIEnv *env, jobject /*unu
     LOGi("Loading backends from %s", path_to_backend);
     ggml_backend_load_all_from_path(path_to_backend);
     env->ReleaseStringUTFChars(nativeLibDir, path_to_backend);
+    write_diagnostic("native.init.backends_loaded");
 
     // Initialize backends
     llama_backend_init();
+    write_diagnostic("native.init.complete");
     LOGi("Backend initiated; Log handler set.");
 }
 
