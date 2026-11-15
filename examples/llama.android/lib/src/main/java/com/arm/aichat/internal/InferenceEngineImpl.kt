@@ -44,7 +44,8 @@ import java.io.IOException
  * @see ai_chat.cpp for the native implementation details
  */
 internal class InferenceEngineImpl private constructor(
-    private val nativeLibDir: String
+    private val nativeLibDir: String,
+    private val diagnosticsPath: String
 ) : InferenceEngine {
 
     companion object {
@@ -67,7 +68,10 @@ internal class InferenceEngineImpl private constructor(
 
                 try {
                     Log.i(TAG, "Instantiating InferenceEngineImpl,,,")
-                    InferenceEngineImpl(nativeLibDir).also { instance = it }
+                    InferenceEngineImpl(
+                        nativeLibDir,
+                        File(context.filesDir, "ava-poc-diagnostics.log").absolutePath
+                    ).also { instance = it }
                 } catch (e: UnsatisfiedLinkError) {
                     Log.e(TAG, "Failed to load native library from $nativeLibDir", e)
                     throw e
@@ -80,7 +84,7 @@ internal class InferenceEngineImpl private constructor(
      * @see ai_chat.cpp
      */
     @FastNative
-    private external fun init(nativeLibDir: String)
+    private external fun init(nativeLibDir: String, diagnosticsPath: String)
 
     @FastNative
     private external fun load(modelPath: String): Int
@@ -133,7 +137,7 @@ internal class InferenceEngineImpl private constructor(
                 _state.value = InferenceEngine.State.Initializing
                 Log.i(TAG, "Loading native library...")
                 System.loadLibrary("ai-chat")
-                init(nativeLibDir)
+                init(nativeLibDir, diagnosticsPath)
                 _state.value = InferenceEngine.State.Initialized
                 Log.i(TAG, "Native library loaded! System info: \n${systemInfo()}")
 
